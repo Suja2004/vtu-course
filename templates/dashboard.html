@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard</title>
+    <style>
+        body { font-family: Arial; }
+        .module { margin-bottom: 20px; }
+        .lecture { margin-left: 20px; }
+    </style>
+</head>
+<body>
+
+<h1>{{ data.title }}</h1>
+
+{% for lesson in data.lessons %}
+    <div class="module">
+        <h3>📘 {{ lesson.title }}</h3>
+
+        {% for lec in lesson.lectures %}
+            <div class="lecture">
+                ▶ {{ lec.title }} |
+                ⏱ {{ lec.duration }} |
+                {% if lec.is_completed %}
+                    ✅ Completed
+                {% else %}
+                    ❌ Not Completed
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+{% endfor %}
+
+</body>
+</html>
