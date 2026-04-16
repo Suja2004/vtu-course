@@ -3,6 +3,7 @@ import requests
 import time
 import random
 from requests.adapters import Retry, HTTPAdapter
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
@@ -36,14 +37,51 @@ def create_session(cookie):
 
 
 # -------------------------------
-# FETCH COURSE + ENRICH LECTURES
+# ENRICH SINGLE LECTURE
+# -------------------------------
+def enrich_lecture(session, course_slug, lec):
+    lecture_id = lec["id"]
+    url = f"https://online.vtu.ac.in/api/v1/student/my-courses/{course_slug}/lectures/{lecture_id}"
+
+    try:
+        res = session.get(url, timeout=10)
+
+        if res.status_code == 401:
+            return "expired"
+
+        if res.ok:
+            data = res.json()["data"]
+
+            # duration → minutes
+            try:
+                h, m, s = map(int, data["duration"].split()[0].split(":"))
+                total_seconds = h * 3600 + m * 60 + s
+                lec["duration_minutes"] = round(total_seconds / 60)
+            except:
+                lec["duration_minutes"] = 0
+
+            lec["percent"] = data.get("percent", 0)
+
+        else:
+            lec["duration_minutes"] = 0
+            lec["percent"] = 0
+
+    except:
+        lec["duration_minutes"] = 0
+        lec["percent"] = 0
+
+    return None
+
+
+# -------------------------------
+# FETCH COURSE + PARALLEL ENRICH
 # -------------------------------
 def fetch_course_data(cookie, course_slug):
     session = create_session(cookie)
 
     url = f"https://online.vtu.ac.in/api/v1/student/my-courses/{course_slug}"
 
-    res = session.get(url)
+    res = session.get(url, timeout=10)
 
     if res.status_code == 401:
         return None, "expired"
@@ -53,46 +91,31 @@ def fetch_course_data(cookie, course_slug):
 
     data = res.json()["data"]
 
-    # 🔥 Enrich each lecture with extra API
+    # collect all lectures
+    lectures = []
     for lesson in data["lessons"]:
-        for lec in lesson["lectures"]:
-            lecture_id = lec["id"]
+        lectures.extend(lesson["lectures"])
 
-            lec_url = f"https://online.vtu.ac.in/api/v1/student/my-courses/{course_slug}/lectures/{lecture_id}"
+    # parallel API calls (IMPORTANT FIX)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(
+            lambda lec: enrich_lecture(session, course_slug, lec),
+            lectures
+        ))
 
-            lec_res = session.get(lec_url)
-
-            if lec_res.status_code == 401:
-                return None, "expired"
-
-            if lec_res.ok:
-                lec_data = lec_res.json()["data"]
-
-                # duration → minutes
-                try:
-                    h, m, s = map(
-                        int, lec_data["duration"].split()[0].split(":"))
-                    total_seconds = h * 3600 + m * 60 + s
-                    lec["duration_minutes"] = round(total_seconds / 60)
-                except:
-                    lec["duration_minutes"] = 0
-
-                lec["percent"] = lec_data.get("percent", 0)
-
-            else:
-                lec["duration_minutes"] = 0
-                lec["percent"] = 0
+    if "expired" in results:
+        return None, "expired"
 
     return data, None
 
 
 # -------------------------------
-# COMPLETE LOGIC
+# GET DURATION (for completion)
 # -------------------------------
 def get_duration(session, course, lecture_id):
     url = f"https://online.vtu.ac.in/api/v1/student/my-courses/{course}/lectures/{lecture_id}"
 
-    res = session.get(url)
+    res = session.get(url, timeout=10)
 
     if res.status_code == 401:
         return None, "unauthorized"
@@ -109,6 +132,9 @@ def get_duration(session, course, lecture_id):
         return 0, None
 
 
+# -------------------------------
+# ROUTES
+# -------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -118,7 +144,7 @@ def index():
         data, err = fetch_course_data(cookie, course)
 
         if err == "expired":
-            return "⚠ Cookie expired. Refresh and try again."
+            return "⚠ Cookie expired. Go back and paste a new one."
 
         if not data:
             return "Failed to fetch data"
@@ -158,10 +184,13 @@ def complete():
             return {"status": "expired"}
 
         current += step
-        time.sleep(random.uniform(2, 4))  # safer timing
+        time.sleep(random.uniform(2, 4))
 
     return {"status": "done"}
 
 
+# -------------------------------
+# RUN
+# -------------------------------
 if __name__ == "__main__":
     app.run(debug=True)
